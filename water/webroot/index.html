@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" type="text/css" href="https://get.greycat.io/files/ui/dev/6.1/6.1.50-dev.css"/>
+  <link rel="stylesheet" type="text/css" href="./index.css"/>
+  <script src="https://get.greycat.io/files/ui/dev/6.1/6.1.50-dev.js"></script>
+  <title>GreyCat Example</title>
+</head>
+
+<body>
+
+  <div id="actions">
+    <button id="refresh_water">Refresh water data</button>
+    <button id="refresh_rain">Refresh temp & rain data</button>
+    <button id="reload_water">Reload water</button>
+    <button id="reload_rain">Reload temp & rain</button>
+    <button id="show_water">Plot water level</button>
+    <button id="show_rain">Plot rain</button>
+    <div id="msg"></div>
+  </div>
+
+  <gui-chart id="chart"></gui-chart>
+
+  <script type="module">
+
+    document.getElementById ("refresh_water").addEventListener ("click", refresh_water, false);
+    document.getElementById ("reload_water").addEventListener ("click", reload_water, false);
+    document.getElementById ("refresh_rain").addEventListener ("click", refresh_t_rain, false);
+    document.getElementById ("reload_rain").addEventListener ("click", reload_t_rain, false);
+    document.getElementById ("show_water").addEventListener ("click", plot_water, false);
+    document.getElementById ("show_rain").addEventListener ("click", plot_rain, false);
+
+    const { GreyCat, stdlib } = greycat.sdk;
+
+    const g = await GreyCat.init({
+      url: new URL('http://localhost:8080'),
+      libraries: [stdlib],
+    });
+
+    const msgEl = document.getElementById('msg');
+    const chartEl = document.getElementById('chart');
+    chartEl.style.width = '1024px';
+    chartEl.style.height = '768px';
+
+    async function refresh_water() {
+      msgEl.textContent = await g.call('project::api_refresh_water', []);
+    }
+    async function reload_water() {
+      msgEl.textContent = await g.call('project::api_reload_water', []);
+    }
+    async function refresh_t_rain() {
+      msgEl.textContent = await g.call('project::api_refresh_t_rain', []);
+    }
+    async function reload_t_rain() {
+      msgEl.textContent = await g.call('project::api_reload_t_rain', []);
+    }
+    async function plot_water() {
+
+      const location = 'Rosport';
+      const table = await g.call('project::api_get_water', [location]);
+      console.log({ table });
+      if (table.cols[0].length == 0) {
+        msgEl.textContent = 'no water data';
+        return;
+      }
+      msgEl.textContent = 'retrieved water data';
+
+      const label = location.toUpperCase() + ' until ' + (new Date(table.cols[0][table.cols[0].length - 1].epoch * 1_000)) + ' (' + table.cols[2][0] + ')';
+
+      chartEl.config = {
+        cursor: true,
+        xAxis: {
+          scale: 'time',
+          format: '%x',
+          cursorFormat: '%X'
+        },
+        yAxes: {
+          y: {
+            min: table.cols[1].min,
+            max: table.cols[1].max,
+          },
+        },
+        table: table,
+        series: [
+          {
+            type: 'line+area',
+            title: label,
+            yAxis: 'y',
+            xCol: 0,
+            yCol: 1,
+          },
+         ],
+      };
+      chartEl.update();
+      chartEl.style.visibility = "visible";
+    }
+
+    async function plot_rain() {
+
+      const table = await g.call('project::api_get_t_rain', []);
+      console.log({ table });
+      if (table.cols[0].length == 0) {
+        msgEl.textContent = 'no rain data';
+        return;
+      }
+      msgEl.textContent = 'retrieved rain data';
+
+      const label_rain = 'Rain, since ' + (new Date(table.cols[0][0].epoch * 1_000)) + ' (mm)';
+      const label_tmax = 'Max temperature, since ' + (new Date(table.cols[0][0].epoch * 1_000)) + ' (C)';
+
+      chartEl.config = {
+        cursor: true,
+        xAxis: {
+          scale: 'time',
+          format: '%x',
+          cursorFormat: '%X'
+        },
+        yAxes: {
+          rain: {
+            min: table.cols[1].min,
+            max: table.cols[1].max,
+            position: 'left',
+          },
+          tmax: {
+            min: table.cols[2].min,
+            max: table.cols[2].max,
+            position: 'right',
+          },
+        },
+        table: table,
+        series: [
+          {
+            type: 'line+area',
+            title: label_rain,
+            yAxis: 'rain',
+            xCol: 0,
+            yCol: 1,
+          },
+          {
+            type: 'line+area',
+            title: label_tmax,
+            yAxis: 'tmax',
+            xCol: 0,
+            yCol: 2,
+          },
+        ],
+      };
+      chartEl.update();
+      chartEl.style.visibility = "visible";
+    }
+
+  </script>
+
+</body>
+
+</html>

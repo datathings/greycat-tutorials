@@ -1,0 +1,222 @@
+use io;
+
+type Water {
+    level : nodeTime<float>;
+    unit : String;
+};
+var WaterAt : nodeIndex<String, node<Water>>;
+
+var Tmax : nodeTime<float>;
+var Tmin : nodeTime<float>;
+var Rain : nodeTime<float>;
+
+var local_water_csv : String;
+var local_t_rain_csv : String;
+
+//------------------- API -------------------
+
+@write
+@expose
+fn api_refresh_t_rain() : String {
+    local_t_rain_csv ?= "./luxfindel-1947-ongoing.csv";
+    get_latest_t_rain(local_t_rain_csv);
+    import_t_rain(local_t_rain_csv);
+    return "downloaded ${local_t_rain_csv}";
+}
+
+@write
+@expose
+fn api_reload_t_rain() {
+    local_t_rain_csv ?= "./luxfindel-1947-ongoing.csv";
+    import_t_rain(local_t_rain_csv);
+    return "reloaded ${local_t_rain_csv}";
+}
+
+@expose
+fn api_get_t_rain() : Table {
+    if (Rain == null) {
+        println("Rain is null");
+        return Table::new(2);
+    }
+    var last = Rain.lastTime();
+    var month_ago = time::new(last.to(DurationUnit::days) - 30, DurationUnit::days);
+    var res = nodeTime::sample([ Rain, Tmax ], month_ago, last, 30, SamplingMode::fixed, null, null);
+    println("${res.rows()} returned");
+    return res;
+}
+
+@write
+@expose
+fn api_refresh_water() : String {
+    local_water_csv ?= "./levels.csv";
+    get_latest_water(local_water_csv);
+    import_water(local_water_csv);
+    return "downloaded ${local_water_csv}";
+}
+
+@write
+@expose
+fn api_reload_water() : String {
+    local_water_csv ?= "./levels.csv";
+    import_water(local_water_csv);
+    return "reloaded ${local_water_csv}";
+}
+
+@expose
+fn api_get_water(location: String) : Table {
+    var res = Table::new(3);  // date, water level, unit
+    if (WaterAt == null) {
+        println("WaterAt is null");
+        return res;
+    }
+    var wref : node<Water> = WaterAt.get(location);
+    if (wref == null) {
+        println("unknown location");
+        return res;
+    }
+    var row_idx = 0;
+    for (t: time, lvl in wref->level) {
+        res.set(row_idx, 0, t);
+        res.set(row_idx, 1, lvl);
+        res.set(row_idx, 2, wref->unit);
+        row_idx++;
+    }
+    println("${location} range ${wref->level.firstTime().toDateUTC()} - ${wref->level.lastTime().toDateUTC()}");
+    return res;
+}
+
+//------------------- implementation -------------------
+
+fn get_latest_t_rain(csv_file: String) : String {
+    // monthly updates of temperature and rain:
+    var now = Date::fromTime(time::now(), TimeZone::Europe_Luxembourg);
+    var day1 = now.format("%Y%m01");
+    Http::getFile(
+        "https://download.data.public.lu/resources/daily-meteorological-parameters-luxembourg-findel-airport-wmo-id-06590/${day1}-101035/06590-dailyparams-luxfindel-1947-ongoing.csv",
+        csv_file,
+        []);
+    return csv_file;
+}
+
+type TRain {
+    day: time;
+    tmax: float;
+    tmin: float;
+    rain_mm: float;
+};
+
+fn import_t_rain(csv_file : String) {
+    reset_t_rain();
+    var fmt = CsvFormat{
+        header_lines : 1,
+        infer : false,
+        separator : ',',
+        columns : [
+            CsvColumnDate { format: "%d.%m.%Y", tz: TimeZone::Europe_Luxembourg, as_time: true, mandatory: true },
+            CsvColumnFloat { name: "tmax", mandatory: false },
+            CsvColumnFloat { name: "tmin", mandatory: false },
+            CsvColumnFloat { name: "rain", mandatory: false }
+        ] as Array<CsvColumn>
+    };
+    var r = CsvReader::new(csv_file, fmt);
+    var tr = TRain { day : 0_time, tmax : 0.0, tmin : 0.0, rain_mm : 0.0};
+    while (r.available() > 0) {
+        r.read_to(tr);
+        Tmax.setAt(tr.day, tr.tmax);
+        Tmin.setAt(tr.day, tr.tmin);
+        Rain.setAt(tr.day, tr.rain_mm);
+    }
+}
+
+fn reset_t_rain() {
+    Tmax ?= nodeTime<float>::new();
+    Tmax.removeAll();
+    Tmin ?= nodeTime<float>::new();
+    Tmin.removeAll();
+    Rain ?= nodeTime<float>::new();
+    Rain.removeAll();
+}
+
+fn get_latest_water(csv_file: String) : String {
+    // updates every 15 min, and messy as real CSV:
+    Http::getFile("https://inondations.lu/water-level-export/all?localtime", csv_file, []);
+    return csv_file;
+}
+
+fn import_water(csv_file : String) {
+    reset_water();
+
+    var hdr = parse_water_header(csv_file);
+
+    var col_fmt = Array<CsvColumn>::new(hdr.size());
+    col_fmt.set(0, CsvColumnString{ name: hdr.get(0), mandatory: true, trim : true});
+    col_fmt.set(1, CsvColumnInteger{ name: hdr.get(1), mandatory: false});
+    col_fmt.set(2, CsvColumnString{ name: hdr.get(2), mandatory: true, trim : true});
+    for (var i = 3; i < hdr.size(); i++) {
+        col_fmt.set(i, CsvColumnFloat{ name : "t_${i}", mandatory: false});
+    }
+    var fmt = CsvFormat{
+        header_lines : 1,
+        infer : false,
+        separator : ';',
+        columns : col_fmt
+    };
+    var r = CsvReader::new(csv_file, fmt);
+    while (r.available() > 0) {
+        var row = r.read();
+        var w = Water { level: nodeTime<float>::new(), unit: row.get(2) };
+        for (var i = 3; i < hdr.size(); i++) {
+            if (row.get(i) != null) {
+                w.level.setAt(hdr.get(i), row.get(i));
+            }
+        }
+        WaterAt.set(row.get(0), node<Water>::new(w));
+        println("${row.get(0)}: ${w.level.size()} measures");
+    }
+}
+
+fn reset_water() {
+    WaterAt ?= nodeIndex<String, node<Water>>::new();
+    WaterAt.removeAll();
+}
+
+fn parse_water_header(csv_file: String) : Array<any> {
+    // times are actually stored in the header row, from position 3 onwards
+    // 1st pass: get the total nbr of columns, so we can dynamically define a parser:
+    var fmt1 = CsvFormat{
+        header_lines : 0 ,
+        infer : false ,
+        separator : ';' ,
+    };
+    var r1 = CsvReader::new(csv_file, fmt1);
+    if (r1.available() == 0) {
+        return null;
+    }
+    var nb_cols = r1.read().size();
+    // 2nd pass: re-read the header line with an appropriate columns' format,
+    // which will do all conversions for us:
+    var col_fmt = Array<CsvColumn>::new(nb_cols);
+    var str_col = CsvColumnString{ trim : true };
+    // new column format to convert all string fields straight into times:
+    var dt_col = CsvColumnDate {
+        format : "%d.%m.%Y %H:%M",
+        tz : TimeZone::Europe_Luxembourg,
+        as_time : true
+    };
+    col_fmt.set(0, str_col);
+    col_fmt.set(1, str_col);
+    col_fmt.set(2, str_col);
+    for (var i = 3; i < nb_cols; i++) {
+        col_fmt.set(i, dt_col);
+    }
+    var fmt2 = CsvFormat{
+        header_lines : 0,
+        infer : false,
+        separator : ';',
+        columns : col_fmt
+    };
+    // read & parse header with new format:
+    var r2 = CsvReader::new(csv_file, fmt2);
+    var cols = r2.read();
+    return cols;
+}
